@@ -1,0 +1,924 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { 
+  Clock, 
+  Calendar, 
+  CheckCircle2, 
+  BarChart3, 
+  User, 
+  Plus, 
+  Filter, 
+  ChevronLeft, 
+  ChevronRight, 
+  Play, 
+  Square, 
+  Settings,
+  MoreVertical,
+  Edit2,
+  Table as TableIcon,
+  LayoutDashboard,
+  Timer,
+  X
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Job, TimeLog, Task, AppSettings } from './types';
+
+// --- Components ---
+
+const BottomNav = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
+  const tabs = [
+    { id: 'tasks', icon: CheckCircle2, label: 'Tasks' },
+    { id: 'calendar', icon: Calendar, label: 'Calendar' },
+    { id: 'timelog', icon: Clock, label: 'Time Log', center: true },
+    { id: 'focus', icon: Timer, label: 'Focus Mode' },
+    { id: 'profile', icon: User, label: 'Profile' },
+  ];
+
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 bg-surface border-t border-border-ui px-4 pb-safe pt-2 z-40">
+      <div className="flex items-end justify-between gap-2 pb-2 max-w-lg mx-auto">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex flex-1 flex-col items-center justify-center gap-1 transition-colors ${
+              activeTab === tab.id ? 'text-primary' : 'text-text-dim'
+            }`}
+            type="button"
+          >
+            {tab.center ? (
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-white shadow-lg shadow-primary/30 -mt-6 mb-1">
+                <tab.icon size={24} />
+              </div>
+            ) : (
+              <tab.icon size={22} className={activeTab === tab.id ? 'text-primary' : 'text-text-dim'} />
+            )}
+            <span className={`text-[10px] font-medium ${activeTab === tab.id ? 'font-bold' : ''}`}>
+              {tab.label}
+            </span>
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+};
+
+// FIXED: Added useRef to prevent callback dependency issues
+const FocusModeOverlay = ({ duration, onEnd }: { duration: number, onEnd: () => void }) => {
+  const [timeLeft, setTimeLeft] = useState(duration * 60);
+  const onEndRef = useRef(onEnd);
+  
+  // Keep ref updated with latest onEnd
+  useEffect(() => {
+    onEndRef.current = onEnd;
+  }, [onEnd]);
+
+  useEffect(() => {
+    if (timeLeft <= 0) {
+      onEndRef.current();
+      return;
+    }
+    const timer = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+    return () => clearInterval(timer);
+  }, [timeLeft]);
+
+  const formatTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h > 0 ? h + ':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black z-[100] flex flex-col items-center justify-center text-white p-8 text-center"
+    >
+      <Timer size={80} className="text-primary mb-8 animate-pulse" />
+      <h2 className="text-4xl font-bold mb-4">Focus Mode Active</h2>
+      <p className="text-xl text-gray-400 mb-12">Stay productive. Your device is restricted.</p>
+      <div className="text-8xl font-mono font-bold mb-16 tracking-tighter">
+        {formatTime(timeLeft)}
+      </div>
+      <button 
+        onClick={onEnd}
+        className="px-8 py-4 bg-white/10 hover:bg-white/20 rounded-full text-sm font-semibold transition-colors flex items-center gap-2"
+        type="button"
+      >
+        <X size={18} /> Emergency Exit
+      </button>
+    </motion.div>
+  );
+};
+
+// --- Main App Component ---
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('tasks');
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [logs, setLogs] = useState<TimeLog[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [settings, setSettings] = useState<AppSettings>({});
+  const [activeJobId, setActiveJobId] = useState<number | 'all'>('all');
+  const [isClockedIn, setIsClockedIn] = useState(false);
+  const [activeLog, setActiveLog] = useState<TimeLog | null>(null);
+  const [showFocusMode, setShowFocusMode] = useState(false);
+  const [focusDuration, setFocusDuration] = useState(25);
+  const [viewMode, setViewMode] = useState<'list' | 'spreadsheet'>('list');
+  
+  // New State
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [newTask, setNewTask] = useState({ title: '', job_id: '', priority: 'Mid' });
+  const [calendarFilter, setCalendarFilter] = useState<'all' | 'tasks' | 'jobs'>('all');
+  const [calendarJobFilter, setCalendarJobFilter] = useState<number | 'all'>('all');
+  // FIXED: Added state for real-time clock session timer
+  const [clockSessionSeconds, setClockSessionSeconds] = useState<number>(0);
+
+  // FIXED: Added error handling to all fetch calls
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [jobsRes, logsRes, tasksRes, settingsRes] = await Promise.all([
+          fetch('/api/jobs').then(r => { 
+            if (!r.ok) throw new Error('Failed to fetch jobs'); 
+            return r.json(); 
+          }),
+          fetch('/api/time-logs').then(r => { 
+            if (!r.ok) throw new Error('Failed to fetch time logs'); 
+            return r.json(); 
+          }),
+          fetch('/api/tasks').then(r => { 
+            if (!r.ok) throw new Error('Failed to fetch tasks'); 
+            return r.json(); 
+          }),
+          fetch('/api/settings').then(r => { 
+            if (!r.ok) throw new Error('Failed to fetch settings'); 
+            return r.json(); 
+          }),
+        ]);
+        setJobs(jobsRes);
+        setLogs(logsRes);
+        setTasks(tasksRes);
+        setSettings(settingsRes);
+
+        // Check for active clock-in
+        const active = logsRes.find((l: TimeLog) => !l.end_time);
+        if (active) {
+          setIsClockedIn(true);
+          setActiveLog(active);
+          // Calculate initial elapsed time
+          setClockSessionSeconds(Math.floor((Date.now() - new Date(active.start_time).getTime()) / 1000));
+        }
+      } catch (err) {
+        console.error('Failed to fetch data:', err);
+        alert('Failed to load data. Please refresh the page.');
+      }
+    };
+    fetchData();
+  }, []);
+
+  // FIXED: Added real-time timer for active clock session
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (isClockedIn && activeLog) {
+      timer = setInterval(() => {
+        setClockSessionSeconds(Math.floor((Date.now() - new Date(activeLog.start_time).getTime()) / 1000));
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isClockedIn, activeLog]);
+
+  // Apply custom colors from settings
+  useEffect(() => {
+    const root = document.documentElement;
+    if (settings.primaryColor) root.style.setProperty('--primary-color', settings.primaryColor);
+    if (settings.bgColor) root.style.setProperty('--bg-color', settings.bgColor);
+    if (settings.surfaceColor) root.style.setProperty('--surface-color', settings.surfaceColor);
+    if (settings.textColor) root.style.setProperty('--text-color', settings.textColor);
+    if (settings.borderColor) root.style.setProperty('--border-color', settings.borderColor);
+  }, [settings]);
+
+  // FIXED: Added error handling
+  const handleClockIn = async (jobId: number) => {
+    try {
+      const startTime = new Date().toISOString();
+      const res = await fetch('/api/time-logs/clock-in', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId, start_time: startTime }),
+      });
+      if (!res.ok) throw new Error('Clock in failed');
+      
+      const newLog = await res.json();
+      const job = jobs.find(j => j.id === jobId);
+      const fullLog = { ...newLog, job_name: job?.name, job_color: job?.color, end_time: null };
+      setLogs([fullLog, ...logs]);
+      setIsClockedIn(true);
+      setActiveLog(fullLog);
+      setClockSessionSeconds(0);
+    } catch (err) {
+      console.error('Clock in error:', err);
+      alert('Failed to clock in. Please try again.');
+    }
+  };
+
+  // FIXED: Added error handling
+  const handleClockOut = async () => {
+    if (!activeLog) return;
+    try {
+      const endTime = new Date().toISOString();
+      const res = await fetch('/api/time-logs/clock-out', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: activeLog.id, end_time: endTime }),
+      });
+      if (!res.ok) throw new Error('Clock out failed');
+      
+      setLogs(logs.map(l => l.id === activeLog.id ? { ...l, end_time: endTime } : l));
+      setIsClockedIn(false);
+      setActiveLog(null);
+      setClockSessionSeconds(0);
+    } catch (err) {
+      console.error('Clock out error:', err);
+      alert('Failed to clock out. Please try again.');
+    }
+  };
+
+  const filteredLogs = useMemo(() => {
+    if (activeJobId === 'all') return logs;
+    return logs.filter(l => l.job_id === activeJobId);
+  }, [logs, activeJobId]);
+
+  const totalDuration = useMemo(() => {
+    return filteredLogs.reduce((acc, log) => {
+      if (!log.end_time) return acc;
+      const start = new Date(log.start_time).getTime();
+      const end = new Date(log.end_time).getTime();
+      return acc + (end - start);
+    }, 0);
+  }, [filteredLogs]);
+
+  const formatDuration = (ms: number) => {
+    const hours = Math.floor(ms / (1000 * 60 * 60));
+    const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+    return `${hours}h ${minutes}m`;
+  };
+
+  // FIXED: Added helper function to format seconds (similar to formatTime in FocusModeOverlay)
+  const formatSeconds = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h > 0 ? h + ':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const renderTimeLog = () => (
+    <div className="flex flex-col h-full pb-24 overflow-y-auto">
+      <header className="sticky top-0 z-20 bg-bg-app border-b border-border-ui px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-bold tracking-tight">Time Log</h1>
+          <button 
+            onClick={() => setViewMode(viewMode === 'list' ? 'spreadsheet' : 'list')}
+            className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs font-semibold flex items-center gap-1"
+            type="button"
+          >
+            {viewMode === 'list' ? <TableIcon size={12} /> : <LayoutDashboard size={12} />}
+            {viewMode === 'list' ? 'Spreadsheet View' : 'List View'}
+          </button>
+        </div>
+        <button className="p-2 rounded-full text-text-dim hover:bg-surface transition-colors" type="button">
+          <Filter size={20} className="text-primary" />
+        </button>
+      </header>
+
+      <div className="bg-bg-app border-b border-border-ui py-3 px-4">
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+          <button 
+            onClick={() => setActiveJobId('all')}
+            className={`px-4 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
+              activeJobId === 'all' ? 'bg-primary text-white' : 'bg-surface text-text-dim'
+            }`}
+            type="button"
+          >
+            All Jobs
+          </button>
+          {jobs.map(job => (
+            <button 
+              key={job.id}
+              onClick={() => setActiveJobId(job.id)}
+              className={`px-4 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
+                activeJobId === job.id ? 'bg-primary text-white' : 'bg-surface text-text-dim'
+              }`}
+              type="button"
+            >
+              {job.name}
+            </button>
+          ))}
+        </div>
+        <div className="mt-2 flex items-center gap-1.5 text-[10px] text-text-dim uppercase tracking-wider font-semibold">
+          <MoreVertical size={12} />
+          <span>Filtered by: <span className="text-primary">{activeJobId === 'all' ? 'All Jobs' : jobs.find(j => j.id === activeJobId)?.name}</span></span>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        {viewMode === 'spreadsheet' ? (
+          <div className="min-w-[600px] w-full">
+            <div className="sticky top-0 z-10 grid grid-cols-[100px_1fr_100px_100px_100px] bg-surface border-b border-border-ui">
+              <div className="px-4 py-3 text-[10px] font-bold text-text-dim uppercase tracking-wider">Date</div>
+              <div className="px-4 py-3 text-[10px] font-bold text-text-dim uppercase tracking-wider">Job Name</div>
+              <div className="px-4 py-3 text-[10px] font-bold text-text-dim uppercase tracking-wider">Start</div>
+              <div className="px-4 py-3 text-[10px] font-bold text-text-dim uppercase tracking-wider">End</div>
+              <div className="px-4 py-3 text-[10px] font-bold text-text-dim uppercase tracking-wider text-right">Duration</div>
+            </div>
+            <div className="divide-y divide-border-ui">
+              {filteredLogs.map(log => {
+                const start = new Date(log.start_time);
+                const end = log.end_time ? new Date(log.end_time) : null;
+                const duration = end ? end.getTime() - start.getTime() : 0;
+                return (
+                  <div key={log.id} className="grid grid-cols-[100px_1fr_100px_100px_100px] hover:bg-surface/50 transition-colors">
+                    <div className="px-4 py-4 text-sm font-medium">{start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
+                    <div className="px-4 py-4 text-sm flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: log.job_color }}></div>
+                      {log.job_name}
+                    </div>
+                    <div className="px-4 py-4 text-sm text-text-dim">{start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                    <div className="px-4 py-4 text-sm text-text-dim">{end ? end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '---'}</div>
+                    <div className="px-4 py-4 text-sm font-semibold text-right">{end ? formatDuration(duration) : 'Active'}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="sticky bottom-0 z-10 grid grid-cols-[100px_1fr_100px_100px_100px] bg-surface border-t border-border-ui">
+              <div className="px-4 py-3 text-xs font-bold">TOTAL</div>
+              <div className="col-span-3"></div>
+              <div className="px-4 py-3 text-xs font-bold text-primary text-right">{formatDuration(totalDuration)}</div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 space-y-4">
+            {/* Clock In/Out Card - FIXED: Proper timer display and button logic */}
+            <div className="bg-surface rounded-2xl p-6 border border-border-ui shadow-xl">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-lg font-bold">Current Session</h3>
+                  <p className="text-sm text-text-dim">{isClockedIn ? `Working on ${activeLog?.job_name}` : 'Ready to start'}</p>
+                </div>
+                <div className="bg-primary/10 p-3 rounded-full text-primary">
+                  <Clock size={24} />
+                </div>
+              </div>
+              
+              {isClockedIn && activeLog ? (
+                <div className="space-y-4">
+                  <div className="text-4xl font-mono font-bold text-center py-4">
+                    {formatSeconds(clockSessionSeconds)}
+                  </div>
+                  <button 
+                    onClick={handleClockOut}
+                    className="w-full py-4 bg-red-500 hover:bg-red-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-colors"
+                    type="button"
+                  >
+                    <Square size={20} fill="white" /> Clock Out
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* FIXED: Select now triggers clock-in when option is selected, resets after */}
+                  <select 
+                    className="w-full bg-bg-app border border-border-ui rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-primary outline-none"
+                    onChange={(e) => {
+                      const jobId = Number(e.target.value);
+                      if (jobId && !isNaN(jobId)) {
+                        handleClockIn(jobId);
+                      }
+                      // Reset select to default
+                      e.currentTarget.value = '';
+                    }}
+                    defaultValue=""
+                  >
+                    <option value="" disabled>Select Job to Clock In</option>
+                    {jobs.map(job => (
+                      <option key={job.id} value={job.id}>{job.name}</option>
+                    ))}
+                  </select>
+                  {/* FIXED: Button removed - select handles clock-in now */}
+                </div>
+              )}
+            </div>
+
+            {/* Recent Logs List */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest px-1">Recent Activity</h3>
+              {filteredLogs.slice(0, 5).map(log => (
+                <div key={log.id} className="bg-surface rounded-xl p-4 border border-border-ui flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: `${log.job_color}20`, color: log.job_color }}>
+                      <Clock size={20} />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold">{log.job_name}</h4>
+                      <p className="text-xs text-text-dim">
+                        {new Date(log.start_time).toLocaleDateString()} • {new Date(log.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold">{log.end_time ? formatDuration(new Date(log.end_time).getTime() - new Date(log.start_time).getTime()) : 'Active'}</p>
+                    <button className="text-primary text-xs font-semibold" type="button">Edit</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderTasks = () => (
+    <div className="flex flex-col h-full pb-24 overflow-y-auto">
+      <header className="sticky top-0 z-20 bg-bg-app border-b border-border-ui px-4 py-3 flex items-center justify-between">
+        <h1 className="text-xl font-bold tracking-tight">Tasks</h1>
+        <button 
+          onClick={() => setShowAddTask(true)}
+          className="p-2 bg-primary text-white rounded-full shadow-lg shadow-primary/20"
+          type="button"
+        >
+          <Plus size={20} />
+        </button>
+      </header>
+
+      <div className="p-4 space-y-6">
+        {showAddTask && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-surface rounded-2xl p-4 border border-border-ui space-y-4"
+          >
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold">Add New Task</h3>
+              <button onClick={() => setShowAddTask(false)} type="button"><X size={18} /></button>
+            </div>
+            <input 
+              type="text" 
+              placeholder="Task title..."
+              className="w-full bg-bg-app border border-border-ui rounded-xl px-4 py-2 text-sm outline-none"
+              value={newTask.title}
+              onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <select 
+                className="bg-bg-app border border-border-ui rounded-xl px-4 py-2 text-sm outline-none"
+                value={newTask.job_id}
+                onChange={(e) => setNewTask({ ...newTask, job_id: e.target.value })}
+              >
+                <option value="">No Job</option>
+                {jobs.map(j => <option key={j.id} value={j.id}>{j.name}</option>)}
+              </select>
+              <select 
+                className="bg-bg-app border border-border-ui rounded-xl px-4 py-2 text-sm outline-none"
+                value={newTask.priority}
+                onChange={(e) => setNewTask({ ...newTask, priority: e.target.value })}
+              >
+                <option value="High">High Priority</option>
+                <option value="Mid">Mid Priority</option>
+                <option value="Low">Low Priority</option>
+              </select>
+            </div>
+            <button 
+              onClick={async () => {
+                if (!newTask.title) return;
+                try {
+                  const res = await fetch('/api/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                      title: newTask.title, 
+                      job_id: newTask.job_id ? Number(newTask.job_id) : null,
+                      priority: newTask.priority
+                    }),
+                  });
+                  if (!res.ok) throw new Error('Failed to add task');
+                  const added = await res.json();
+                  const job = jobs.find(j => j.id === Number(newTask.job_id));
+                  setTasks([{ ...added, job_name: job?.name, job_color: job?.color, completed: false }, ...tasks]);
+                  setNewTask({ title: '', job_id: '', priority: 'Mid' });
+                  setShowAddTask(false);
+                } catch (err) {
+                  console.error('Add task error:', err);
+                  alert('Failed to add task. Please try again.');
+                }
+              }}
+              className="w-full py-2 bg-primary text-white rounded-xl font-bold"
+              type="button"
+            >
+              Add Task
+            </button>
+          </motion.div>
+        )}
+
+        {/* Task Stats */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-surface rounded-2xl p-4 border border-border-ui">
+            <p className="text-text-dim text-xs font-bold uppercase mb-1">Pending</p>
+            <p className="text-2xl font-bold">{tasks.filter(t => !t.completed).length}</p>
+          </div>
+          <div className="bg-surface rounded-2xl p-4 border border-border-ui">
+            <p className="text-text-dim text-xs font-bold uppercase mb-1">Completed</p>
+            <p className="text-2xl font-bold text-emerald-500">{tasks.filter(t => t.completed).length}</p>
+          </div>
+        </div>
+
+        {/* Task List */}
+        <div className="space-y-3">
+          {tasks.sort((a, b) => {
+            const pMap = { High: 0, Mid: 1, Low: 2 };
+            return pMap[a.priority as keyof typeof pMap] - pMap[b.priority as keyof typeof pMap];
+          }).map(task => (
+            <motion.div 
+              key={task.id} 
+              layout
+              className={`bg-surface rounded-xl p-4 border border-border-ui flex items-center gap-4 transition-opacity ${task.completed ? 'opacity-60' : ''}`}
+            >
+              <button 
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`/api/tasks/${task.id}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ completed: !task.completed }),
+                    });
+                    if (!res.ok) throw new Error('Failed to update task');
+                    setTasks(tasks.map(t => t.id === task.id ? { ...t, completed: !task.completed } : t));
+                  } catch (err) {
+                    console.error('Update task error:', err);
+                    alert('Failed to update task.');
+                  }
+                }}
+                className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${
+                  task.completed ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-text-dim'
+                }`}
+                type="button"
+              >
+                {task.completed && <CheckCircle2 size={14} />}
+              </button>
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <h4 className={`text-sm font-bold ${task.completed ? 'line-through' : ''}`}>{task.title}</h4>
+                  <span className={`text-[8px] px-1 rounded font-bold uppercase ${
+                    task.priority === 'High' ? 'bg-red-500/20 text-red-500' : 
+                    task.priority === 'Low' ? 'bg-blue-500/20 text-blue-500' : 
+                    'bg-orange-500/20 text-orange-500'
+                  }`}>
+                    {task.priority}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-app text-text-dim border border-border-ui">
+                    {task.job_name || 'Personal'}
+                  </span>
+                  {task.due_date && (
+                    <span className="text-[10px] text-text-dim flex items-center gap-1">
+                      <Calendar size={10} /> {new Date(task.due_date).toLocaleDateString()}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button className="text-text-dim" type="button">
+                <MoreVertical size={18} />
+              </button>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderDashboard = () => (
+    <div className="flex flex-col h-full pb-24 overflow-y-auto">
+      <header className="px-4 py-6">
+        <h1 className="text-2xl font-bold">Focus Mode</h1>
+        <p className="text-text-dim">Stay in the zone</p>
+      </header>
+
+      <div className="p-4 space-y-6">
+        {/* Focus Mode Trigger */}
+        <div className="bg-gradient-to-br from-primary to-violet-600 rounded-3xl p-6 text-white shadow-xl">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold">Deep Focus</h3>
+            <Timer size={24} />
+          </div>
+          <p className="text-white/80 text-sm mb-6">Enter a duration in minutes to start your focus session.</p>
+          <div className="flex items-center gap-4">
+            <div className="flex-1 bg-white/10 rounded-xl p-3 flex items-center gap-2">
+              <input 
+                type="number" 
+                className="bg-transparent w-full text-center font-bold outline-none border-b border-white/30"
+                value={focusDuration}
+                onChange={(e) => setFocusDuration(Number(e.target.value))}
+              />
+              <span className="text-xs font-bold opacity-70">min</span>
+            </div>
+            <button 
+              onClick={() => setShowFocusMode(true)}
+              className="bg-white text-primary px-6 py-3 rounded-xl font-bold hover:bg-gray-100 transition-colors"
+              type="button"
+            >
+              Start
+            </button>
+          </div>
+        </div>
+
+        {/* Weekly Stats */}
+        <div className="space-y-4">
+          <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest">Weekly Progress</h3>
+          <div className="bg-surface rounded-2xl p-6 border border-border-ui">
+            <div className="flex items-end justify-between h-32 gap-2">
+              {[4, 6, 3, 8, 5, 2, 4].map((h, i) => (
+                <div key={i} className="flex-1 flex flex-col items-center gap-2">
+                  <div 
+                    className="w-full bg-primary/20 rounded-t-lg relative group"
+                    style={{ height: `${(h / 8) * 100}%` }}
+                  >
+                    <div className="absolute inset-0 bg-primary opacity-0 group-hover:opacity-100 transition-opacity rounded-t-lg"></div>
+                  </div>
+                  <span className="text-[10px] text-text-dim font-bold">{['M', 'T', 'W', 'T', 'F', 'S', 'S'][i]}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Job Distribution */}
+        <div className="space-y-4">
+          <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest">Job Distribution</h3>
+          <div className="bg-surface rounded-2xl p-6 border border-border-ui space-y-4">
+            {jobs.map(job => {
+              const jobLogs = logs.filter(l => l.job_id === job.id && l.end_time);
+              const duration = jobLogs.reduce((acc, l) => acc + (new Date(l.end_time!).getTime() - new Date(l.start_time).getTime()), 0);
+              const percentage = totalDuration > 0 ? (duration / totalDuration) * 100 : 0;
+              
+              return (
+                <div key={job.id} className="space-y-1.5">
+                  <div className="flex justify-between text-xs font-bold">
+                    <span>{job.name}</span>
+                    <span>{Math.round(percentage)}%</span>
+                  </div>
+                  <div className="h-2 bg-bg-app rounded-full overflow-hidden">
+                    <div 
+                      className="h-full transition-all duration-500" 
+                      style={{ width: `${percentage}%`, backgroundColor: job.color }}
+                    ></div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // FIXED: Calendar filter now properly maintains type consistency
+  const renderCalendar = () => {
+    const today = new Date();
+    const items = [
+      ...tasks.map(t => ({ ...t, type: 'task', date: t.due_date || new Date().toISOString() })),
+      ...logs.map(l => ({ ...l, type: 'log', date: l.start_time }))
+    ].filter(item => {
+      if (calendarFilter === 'tasks' && item.type !== 'task') return false;
+      if (calendarFilter === 'jobs' && item.type !== 'log') return false;
+      if (calendarJobFilter !== 'all' && item.job_id !== calendarJobFilter) return false;
+      return true;
+    }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return (
+      <div className="flex flex-col h-full pb-24 overflow-y-auto">
+        <header className="sticky top-0 z-20 bg-bg-app border-b border-border-ui px-4 py-3">
+          <h1 className="text-xl font-bold tracking-tight">Calendar & Activity</h1>
+          <div className="flex gap-2 mt-3 overflow-x-auto no-scrollbar">
+            <button 
+              onClick={() => setCalendarFilter('all')}
+              className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase ${calendarFilter === 'all' ? 'bg-primary text-white' : 'bg-surface text-text-dim'}`}
+              type="button"
+            >All</button>
+            <button 
+              onClick={() => setCalendarFilter('tasks')}
+              className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase ${calendarFilter === 'tasks' ? 'bg-primary text-white' : 'bg-surface text-text-dim'}`}
+              type="button"
+            >Tasks</button>
+            <button 
+              onClick={() => setCalendarFilter('jobs')}
+              className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase ${calendarFilter === 'jobs' ? 'bg-primary text-white' : 'bg-surface text-text-dim'}`}
+              type="button"
+            >Logs</button>
+            <select 
+              className="bg-surface text-text-dim px-3 py-1 rounded-full text-[10px] font-bold uppercase outline-none"
+              value={calendarJobFilter}
+              onChange={(e) => {
+                setCalendarJobFilter(e.target.value === 'all' ? 'all' : Number(e.target.value));
+              }}
+            >
+              <option value="all">All Jobs</option>
+              {jobs.map(j => <option key={j.id} value={j.id}>{j.name}</option>)}
+            </select>
+          </div>
+        </header>
+
+        <div className="p-4 space-y-4">
+          {items.map((item: any, idx) => (
+            <div key={idx} className="bg-surface rounded-xl p-4 border border-border-ui flex items-start gap-4">
+              <div className={`p-2 rounded-lg ${item.type === 'task' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-primary/10 text-primary'}`}>
+                {item.type === 'task' ? <CheckCircle2 size={18} /> : <Clock size={18} />}
+              </div>
+              <div className="flex-1">
+                <div className="flex justify-between items-start">
+                  <h4 className="text-sm font-bold">{item.title || item.job_name}</h4>
+                  <span className="text-[10px] text-text-dim">{new Date(item.date).toLocaleDateString()}</span>
+                </div>
+                <p className="text-xs text-text-dim mt-1">
+                  {item.type === 'task' ? (item.completed ? 'Completed' : 'Pending') : `${new Date(item.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${item.end_time ? new Date(item.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Active'}`}
+                </p>
+                {item.job_name && (
+                  <div className="flex items-center gap-1 mt-2">
+                    <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: item.job_color }}></div>
+                    <span className="text-[10px] font-medium opacity-70">{item.job_name}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const renderProfile = () => (
+    <div className="flex flex-col h-full pb-24 overflow-y-auto">
+      <header className="px-4 py-6 border-b border-border-ui">
+        <h1 className="text-2xl font-bold">Settings & Profile</h1>
+      </header>
+
+      <div className="p-4 space-y-8">
+        {/* Customization Engine */}
+        <section className="space-y-4">
+          <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest px-1">UI Customization</h3>
+          <div className="bg-surface rounded-2xl p-6 border border-border-ui space-y-6">
+            <div className="grid grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-text-dim">Primary Accent</label>
+                <input 
+                  type="color" 
+                  value={settings.primaryColor || '#135bec'} 
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSettings({ ...settings, primaryColor: val });
+                    fetch('/api/settings', { 
+                      method: 'POST', 
+                      headers: { 'Content-Type': 'application/json' }, 
+                      body: JSON.stringify({ key: 'primaryColor', value: val }) 
+                    }).catch(err => console.error('Settings update error:', err));
+                  }}
+                  className="w-full h-10 rounded-lg bg-bg-app border border-border-ui cursor-pointer"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-text-dim">Background</label>
+                <input 
+                  type="color" 
+                  value={settings.bgColor || '#101622'} 
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSettings({ ...settings, bgColor: val });
+                    fetch('/api/settings', { 
+                      method: 'POST', 
+                      headers: { 'Content-Type': 'application/json' }, 
+                      body: JSON.stringify({ key: 'bgColor', value: val }) 
+                    }).catch(err => console.error('Settings update error:', err));
+                  }}
+                  className="w-full h-10 rounded-lg bg-bg-app border border-border-ui cursor-pointer"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-text-dim">Surface</label>
+                <input 
+                  type="color" 
+                  value={settings.surfaceColor || '#192233'} 
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSettings({ ...settings, surfaceColor: val });
+                    fetch('/api/settings', { 
+                      method: 'POST', 
+                      headers: { 'Content-Type': 'application/json' }, 
+                      body: JSON.stringify({ key: 'surfaceColor', value: val }) 
+                    }).catch(err => console.error('Settings update error:', err));
+                  }}
+                  className="w-full h-10 rounded-lg bg-bg-app border border-border-ui cursor-pointer"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-text-dim">Text Color</label>
+                <input 
+                  type="color" 
+                  value={settings.textColor || '#ffffff'} 
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSettings({ ...settings, textColor: val });
+                    fetch('/api/settings', { 
+                      method: 'POST', 
+                      headers: { 'Content-Type': 'application/json' }, 
+                      body: JSON.stringify({ key: 'textColor', value: val }) 
+                    }).catch(err => console.error('Settings update error:', err));
+                  }}
+                  className="w-full h-10 rounded-lg bg-bg-app border border-border-ui cursor-pointer"
+                />
+              </div>
+            </div>
+            <button 
+              onClick={() => {
+                const defaults = { primaryColor: '#135bec', bgColor: '#101622', surfaceColor: '#192233', textColor: '#ffffff', borderColor: '#232f48' };
+                setSettings(defaults);
+                Object.entries(defaults).forEach(([key, value]) => {
+                  fetch('/api/settings', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify({ key, value }) 
+                  }).catch(err => console.error('Settings reset error:', err));
+                });
+              }}
+              className="w-full py-3 text-sm font-bold text-primary border border-primary/20 rounded-xl hover:bg-primary/5 transition-colors"
+              type="button"
+            >
+              Reset to Defaults
+            </button>
+          </div>
+        </section>
+
+        {/* Job Profiles */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest">Job Profiles</h3>
+            <button className="text-primary text-xs font-bold flex items-center gap-1" type="button"><Plus size={14} /> Add Job</button>
+          </div>
+          <div className="bg-surface rounded-2xl border border-border-ui overflow-hidden">
+            {jobs.map(job => (
+              <div key={job.id} className="p-4 border-b border-border-ui last:border-0 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-4 h-4 rounded-full" style={{ backgroundColor: job.color }}></div>
+                  <span className="font-bold">{job.name}</span>
+                </div>
+                <button className="text-text-dim" type="button"><Edit2 size={16} /></button>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* App Info */}
+        <div className="text-center space-y-1 py-8">
+          <p className="text-xs font-bold text-text-dim">Multi-Job Productivity Suite v1.0.0</p>
+          <p className="text-[10px] text-text-dim/60">Offline-first • SQLite Persistence</p>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen max-w-lg mx-auto bg-bg-app relative">
+      <AnimatePresence>
+        {showFocusMode && (
+          <FocusModeOverlay 
+            duration={focusDuration} 
+            onEnd={() => setShowFocusMode(false)} 
+          />
+        )}
+      </AnimatePresence>
+
+      <main className="h-screen overflow-hidden">
+        {activeTab === 'focus' && renderDashboard()}
+        {activeTab === 'tasks' && renderTasks()}
+        {activeTab === 'timelog' && renderTimeLog()}
+        {activeTab === 'calendar' && renderCalendar()}
+        {activeTab === 'profile' && renderProfile()}
+        {activeTab === 'reports' && (
+          <div className="flex flex-col items-center justify-center h-full p-8 text-center space-y-4">
+            <BarChart3 size={64} className="text-text-dim/20" />
+            <h2 className="text-xl font-bold">Advanced Reports</h2>
+            <p className="text-text-dim">Detailed analytics and export functionality coming soon in the next update.</p>
+          </div>
+        )}
+      </main>
+
+      <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
+    </div>
+  );
+}
