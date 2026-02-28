@@ -5,29 +5,12 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
-  Clock, 
-  Calendar, 
-  CheckCircle2, 
-  BarChart3, 
-  User, 
-  Plus, 
-  Filter, 
-  ChevronLeft, 
-  ChevronRight, 
-  Play, 
-  Square, 
-  Settings,
-  MoreVertical,
-  Edit2,
-  Table as TableIcon,
-  LayoutDashboard,
-  Timer,
-  X
+  Clock, Calendar, CheckCircle2, BarChart3, User, Plus, Filter, 
+  Play, Square, Settings, MoreVertical, Edit2, Table as TableIcon,
+  LayoutDashboard, Timer, X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Job, TimeLog, Task, AppSettings } from './types';
-
-// --- Components ---
 
 const BottomNav = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
   const tabs = [
@@ -67,12 +50,10 @@ const BottomNav = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTa
   );
 };
 
-// FIXED: Added useRef to prevent callback dependency issues
 const FocusModeOverlay = ({ duration, onEnd }: { duration: number, onEnd: () => void }) => {
   const [timeLeft, setTimeLeft] = useState(duration * 60);
   const onEndRef = useRef(onEnd);
   
-  // Keep ref updated with latest onEnd
   useEffect(() => {
     onEndRef.current = onEnd;
   }, [onEnd]);
@@ -117,8 +98,6 @@ const FocusModeOverlay = ({ duration, onEnd }: { duration: number, onEnd: () => 
   );
 };
 
-// --- Main App Component ---
-
 export default function App() {
   const [activeTab, setActiveTab] = useState('tasks');
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -131,48 +110,30 @@ export default function App() {
   const [showFocusMode, setShowFocusMode] = useState(false);
   const [focusDuration, setFocusDuration] = useState(25);
   const [viewMode, setViewMode] = useState<'list' | 'spreadsheet'>('list');
-  
-  // New State
   const [showAddTask, setShowAddTask] = useState(false);
   const [newTask, setNewTask] = useState({ title: '', job_id: '', priority: 'Mid' });
   const [calendarFilter, setCalendarFilter] = useState<'all' | 'tasks' | 'jobs'>('all');
   const [calendarJobFilter, setCalendarJobFilter] = useState<number | 'all'>('all');
-  // FIXED: Added state for real-time clock session timer
   const [clockSessionSeconds, setClockSessionSeconds] = useState<number>(0);
 
-  // FIXED: Added error handling to all fetch calls
   useEffect(() => {
     const fetchData = async () => {
       try {
         const [jobsRes, logsRes, tasksRes, settingsRes] = await Promise.all([
-          fetch('/api/jobs').then(r => { 
-            if (!r.ok) throw new Error('Failed to fetch jobs'); 
-            return r.json(); 
-          }),
-          fetch('/api/time-logs').then(r => { 
-            if (!r.ok) throw new Error('Failed to fetch time logs'); 
-            return r.json(); 
-          }),
-          fetch('/api/tasks').then(r => { 
-            if (!r.ok) throw new Error('Failed to fetch tasks'); 
-            return r.json(); 
-          }),
-          fetch('/api/settings').then(r => { 
-            if (!r.ok) throw new Error('Failed to fetch settings'); 
-            return r.json(); 
-          }),
+          fetch('/api/jobs').then(r => { if (!r.ok) throw new Error('Failed to fetch jobs'); return r.json(); }),
+          fetch('/api/time-logs').then(r => { if (!r.ok) throw new Error('Failed to fetch time logs'); return r.json(); }),
+          fetch('/api/tasks').then(r => { if (!r.ok) throw new Error('Failed to fetch tasks'); return r.json(); }),
+          fetch('/api/settings').then(r => { if (!r.ok) throw new Error('Failed to fetch settings'); return r.json(); }),
         ]);
         setJobs(jobsRes);
         setLogs(logsRes);
         setTasks(tasksRes);
         setSettings(settingsRes);
 
-        // Check for active clock-in
         const active = logsRes.find((l: TimeLog) => !l.end_time);
         if (active) {
           setIsClockedIn(true);
           setActiveLog(active);
-          // Calculate initial elapsed time
           setClockSessionSeconds(Math.floor((Date.now() - new Date(active.start_time).getTime()) / 1000));
         }
       } catch (err) {
@@ -183,7 +144,6 @@ export default function App() {
     fetchData();
   }, []);
 
-  // FIXED: Added real-time timer for active clock session
   useEffect(() => {
     let timer: NodeJS.Timeout;
     if (isClockedIn && activeLog) {
@@ -191,12 +151,9 @@ export default function App() {
         setClockSessionSeconds(Math.floor((Date.now() - new Date(activeLog.start_time).getTime()) / 1000));
       }, 1000);
     }
-    return () => {
-      if (timer) clearInterval(timer);
-    };
+    return () => { if (timer) clearInterval(timer); };
   }, [isClockedIn, activeLog]);
 
-  // Apply custom colors from settings
   useEffect(() => {
     const root = document.documentElement;
     if (settings.primaryColor) root.style.setProperty('--primary-color', settings.primaryColor);
@@ -206,7 +163,6 @@ export default function App() {
     if (settings.borderColor) root.style.setProperty('--border-color', settings.borderColor);
   }, [settings]);
 
-  // FIXED: Added error handling
   const handleClockIn = async (jobId: number) => {
     try {
       const startTime = new Date().toISOString();
@@ -216,7 +172,6 @@ export default function App() {
         body: JSON.stringify({ job_id: jobId, start_time: startTime }),
       });
       if (!res.ok) throw new Error('Clock in failed');
-      
       const newLog = await res.json();
       const job = jobs.find(j => j.id === jobId);
       const fullLog = { ...newLog, job_name: job?.name, job_color: job?.color, end_time: null };
@@ -230,7 +185,6 @@ export default function App() {
     }
   };
 
-  // FIXED: Added error handling
   const handleClockOut = async () => {
     if (!activeLog) return;
     try {
@@ -241,7 +195,6 @@ export default function App() {
         body: JSON.stringify({ id: activeLog.id, end_time: endTime }),
       });
       if (!res.ok) throw new Error('Clock out failed');
-      
       setLogs(logs.map(l => l.id === activeLog.id ? { ...l, end_time: endTime } : l));
       setIsClockedIn(false);
       setActiveLog(null);
@@ -272,7 +225,6 @@ export default function App() {
     return `${hours}h ${minutes}m`;
   };
 
-  // FIXED: Added helper function to format seconds (similar to formatTime in FocusModeOverlay)
   const formatSeconds = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
@@ -323,10 +275,6 @@ export default function App() {
             </button>
           ))}
         </div>
-        <div className="mt-2 flex items-center gap-1.5 text-[10px] text-text-dim uppercase tracking-wider font-semibold">
-          <MoreVertical size={12} />
-          <span>Filtered by: <span className="text-primary">{activeJobId === 'all' ? 'All Jobs' : jobs.find(j => j.id === activeJobId)?.name}</span></span>
-        </div>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -366,7 +314,6 @@ export default function App() {
           </div>
         ) : (
           <div className="p-4 space-y-4">
-            {/* Clock In/Out Card - FIXED: Proper timer display and button logic */}
             <div className="bg-surface rounded-2xl p-6 border border-border-ui shadow-xl">
               <div className="flex items-center justify-between mb-6">
                 <div>
@@ -393,7 +340,6 @@ export default function App() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {/* FIXED: Select now triggers clock-in when option is selected, resets after */}
                   <select 
                     className="w-full bg-bg-app border border-border-ui rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-primary outline-none"
                     onChange={(e) => {
@@ -401,7 +347,6 @@ export default function App() {
                       if (jobId && !isNaN(jobId)) {
                         handleClockIn(jobId);
                       }
-                      // Reset select to default
                       e.currentTarget.value = '';
                     }}
                     defaultValue=""
@@ -411,12 +356,10 @@ export default function App() {
                       <option key={job.id} value={job.id}>{job.name}</option>
                     ))}
                   </select>
-                  {/* FIXED: Button removed - select handles clock-in now */}
                 </div>
               )}
             </div>
 
-            {/* Recent Logs List */}
             <div className="space-y-3">
               <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest px-1">Recent Activity</h3>
               {filteredLogs.slice(0, 5).map(log => (
@@ -527,7 +470,6 @@ export default function App() {
           </motion.div>
         )}
 
-        {/* Task Stats */}
         <div className="grid grid-cols-2 gap-4">
           <div className="bg-surface rounded-2xl p-4 border border-border-ui">
             <p className="text-text-dim text-xs font-bold uppercase mb-1">Pending</p>
@@ -539,7 +481,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Task List */}
         <div className="space-y-3">
           {tasks.sort((a, b) => {
             const pMap = { High: 0, Mid: 1, Low: 2 };
@@ -612,7 +553,6 @@ export default function App() {
       </header>
 
       <div className="p-4 space-y-6">
-        {/* Focus Mode Trigger */}
         <div className="bg-gradient-to-br from-primary to-violet-600 rounded-3xl p-6 text-white shadow-xl">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-bold">Deep Focus</h3>
@@ -639,7 +579,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Weekly Stats */}
         <div className="space-y-4">
           <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest">Weekly Progress</h3>
           <div className="bg-surface rounded-2xl p-6 border border-border-ui">
@@ -659,7 +598,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Job Distribution */}
         <div className="space-y-4">
           <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest">Job Distribution</h3>
           <div className="bg-surface rounded-2xl p-6 border border-border-ui space-y-4">
@@ -689,9 +627,7 @@ export default function App() {
     </div>
   );
 
-  // FIXED: Calendar filter now properly maintains type consistency
   const renderCalendar = () => {
-    const today = new Date();
     const items = [
       ...tasks.map(t => ({ ...t, type: 'task', date: t.due_date || new Date().toISOString() })),
       ...logs.map(l => ({ ...l, type: 'log', date: l.start_time }))
@@ -725,9 +661,7 @@ export default function App() {
             <select 
               className="bg-surface text-text-dim px-3 py-1 rounded-full text-[10px] font-bold uppercase outline-none"
               value={calendarJobFilter}
-              onChange={(e) => {
-                setCalendarJobFilter(e.target.value === 'all' ? 'all' : Number(e.target.value));
-              }}
+              onChange={(e) => setCalendarJobFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))}
             >
               <option value="all">All Jobs</option>
               {jobs.map(j => <option key={j.id} value={j.id}>{j.name}</option>)}
@@ -770,7 +704,6 @@ export default function App() {
       </header>
 
       <div className="p-4 space-y-8">
-        {/* Customization Engine */}
         <section className="space-y-4">
           <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest px-1">UI Customization</h3>
           <div className="bg-surface rounded-2xl p-6 border border-border-ui space-y-6">
@@ -864,7 +797,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* Job Profiles */}
         <section className="space-y-4">
           <div className="flex items-center justify-between px-1">
             <h3 className="text-sm font-bold text-text-dim uppercase tracking-widest">Job Profiles</h3>
@@ -883,7 +815,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* App Info */}
         <div className="text-center space-y-1 py-8">
           <p className="text-xs font-bold text-text-dim">Multi-Job Productivity Suite v1.0.0</p>
           <p className="text-[10px] text-text-dim/60">Offline-first • SQLite Persistence</p>
